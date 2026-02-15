@@ -2,7 +2,7 @@
 
 Name:     car
 Version:  2.16.0
-Release:  1
+Release:  2
 Summary:  Work with car (Content addressed ARchive) files
 License:  Apache-2.0 OR MIT
 Group:    Archiving
@@ -11,6 +11,8 @@ Source0:  https://github.com/ipfs/%{name}/releases/download/v%{version}/%{name}-
 Source1:  %{name}-%{version}-deps.tar.zst
 
 Patch0:  update-deps.patch
+Patch1:  ls-cids.patch
+Patch2:  ls-sizes.patch
 
 BuildRequires:  golang
 

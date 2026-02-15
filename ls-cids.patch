@@ -1,0 +1,190 @@
+From 4683e15f07982da598f73f2991f1bf6c4a88577c Mon Sep 17 00:00:00 2001
+From: Davide Beatrici <git@davidebeatrici.dev>
+Date: Sun, 15 Feb 2026 10:24:07 +0100
+Subject: [PATCH 1/2] refac(cmd): Get rid of "--unixfs-blocks", introduce
+ "--cids"
+
+The urfave/cli library rightfully treats flags as boolean values that can be toggled.
+
+Unfortunately the "list" command is currently abusing those as "sub-commands":
+
+NAME:
+   car list - List the CIDs in a car
+
+USAGE:
+   car list [command options]
+
+OPTIONS:
+   --verbose, -v    Include verbose information about contained blocks (default: false)
+   --unixfs         List unixfs filesystem from the root of the car (default: false)
+   --unixfs-blocks  List blocks of unixfs objects in the car (default: false)
+   --help, -h       show help
+
+- No flags: only CIDs
+- "--unixfs": only paths
+- "--unixfs-blocks": CIDs + paths
+- "--verbose": full blocks info
+
+This commit refactors the flags like this:
+
+NAME:
+   car list - List the blocks in a car
+
+USAGE:
+   car list [command options]
+
+OPTIONS:
+   --verbose, -v  Show verbose information about contained blocks (default: false)
+   --cids         Include CIDs (default: true except for unixfs)
+   --unixfs       Show unixfs filesystem (full paths) (default: false)
+   --help, -h     show help
+
+- No flags: only CIDs
+- "--unixfs": only paths
+- "--unixfs --cids": CIDs + paths
+- "--verbose": full blocks info
+
+And flags can be negated, of course:
+
+- "--cids=false": nothing
+- "--verbose --cids=false": verbose information without CIDs
+---
+ cmd/car/car.go  | 14 ++++++++------
+ cmd/car/list.go | 40 +++++++++++++++++++++++++++-------------
+ 2 files changed, 35 insertions(+), 19 deletions(-)
+
+diff --git a/cmd/car/car.go b/cmd/car/car.go
+index 1c3ecbd..8c01a26 100644
+--- a/cmd/car/car.go
++++ b/cmd/car/car.go
+@@ -213,21 +213,23 @@ func main1() int {
+ 			{
+ 				Name:    "list",
+ 				Aliases: []string{"l", "ls"},
+-				Usage:   "List the CIDs in a car",
++				Usage:   "List the blocks in a car",
+ 				Action:  ListCar,
+ 				Flags: []cli.Flag{
+ 					&cli.BoolFlag{
+ 						Name:    "verbose",
+ 						Aliases: []string{"v"},
+-						Usage:   "Include verbose information about contained blocks",
++						Usage:   "Show verbose information about contained blocks",
+ 					},
+ 					&cli.BoolFlag{
+-						Name:  "unixfs",
+-						Usage: "List unixfs filesystem from the root of the car",
++						Name:        "cids",
++						Value:       true,
++						Usage:       "Include CIDs",
++						DefaultText: "true except for unixfs",
+ 					},
+ 					&cli.BoolFlag{
+-						Name:  "unixfs-blocks",
+-						Usage: "List blocks of unixfs objects in the car",
++						Name:  "unixfs",
++						Usage: "Show unixfs filesystem (full paths)",
+ 					},
+ 				},
+ 			},
+diff --git a/cmd/car/list.go b/cmd/car/list.go
+index 8ba7ebf..521ad95 100644
+--- a/cmd/car/list.go
++++ b/cmd/car/list.go
+@@ -32,7 +32,7 @@ func ListCar(c *cli.Context) error {
+ 	}
+ 	defer outStream.Close()
+ 
+-	if c.Bool("unixfs") || c.Bool("unixfs-blocks") {
++	if c.Bool("unixfs") {
+ 		return listUnixfs(c, outStream)
+ 	}
+ 
+@@ -59,9 +59,12 @@ func ListCar(c *cli.Context) error {
+ 			return err
+ 		}
+ 		if c.Bool("verbose") {
+-			fmt.Fprintf(outStream, "%s: %s\n",
+-				multicodec.Code(blk.Cid().Prefix().Codec).String(),
+-				blk.Cid())
++			fmt.Fprintf(outStream, "%s", multicodec.Code(blk.Cid().Prefix().Codec).String())
++			if c.Bool("cids") {
++				fmt.Fprintf(outStream, ": %s", blk.Cid())
++			}
++			fmt.Fprintln(outStream)
++
+ 			if blk.Cid().Prefix().Codec == uint64(multicodec.DagPb) {
+ 				// parse as dag-pb
+ 				builder := dagpb.Type.PBNode.NewBuilder()
+@@ -87,11 +90,6 @@ func ListCar(c *cli.Context) error {
+ 					max--
+ 					pbl, ok := l.(dagpb.PBLink)
+ 					if ok && max >= 0 {
+-						hsh := "<unknown>"
+-						lnk, ok := pbl.Hash.Link().(cidlink.Link)
+-						if ok {
+-							hsh = lnk.Cid.String()
+-						}
+ 						name := "<no name>"
+ 						if pbl.Name.Exists() {
+ 							name = pbl.Name.Must().String()
+@@ -100,7 +98,20 @@ func ListCar(c *cli.Context) error {
+ 						if pbl.Tsize.Exists() {
+ 							size = int(pbl.Tsize.Must().Int())
+ 						}
+-						fmt.Fprintf(outStream, "\t\t%s[%s] %s\n", name, humanize.Bytes(uint64(size)), hsh)
++						fmt.Fprintf(outStream, "\t\t%s[%s]", name, humanize.Bytes(uint64(size)))
++
++						if c.Bool("cids") {
++							hsh := "<unknown>"
++
++							lnk, ok := pbl.Hash.Link().(cidlink.Link)
++							if ok {
++								hsh = lnk.Cid.String()
++							}
++
++							fmt.Fprintf(outStream, " %s", hsh)
++						}
++
++						fmt.Fprintln(outStream)
+ 					}
+ 				}
+ 				if max < 0 {
+@@ -114,7 +125,7 @@ func ListCar(c *cli.Context) error {
+ 				}
+ 				fmt.Fprintf(outStream, "\tUnixfs %s\n", data.DataTypeNames[ufd.FieldDataType().Int()])
+ 			}
+-		} else {
++		} else if c.Bool("cids") {
+ 			fmt.Fprintf(outStream, "%s\n", blk.Cid())
+ 		}
+ 	}
+@@ -175,12 +186,15 @@ func printUnixFSNode(c *cli.Context, prefix string, node cid.Cid, ls *ipld.LinkS
+ 		return err
+ 	}
+ 
++	// only show CIDs if explicitly requested
++	printCids := c.IsSet("cids") && c.Bool("cids")
++
+ 	if ufd.FieldDataType().Int() == data.Data_Directory {
+ 		i := pbnode.Links.Iterator()
+ 		for !i.Done() {
+ 			_, l := i.Next()
+ 			name := path.Join(prefix, l.Name.Must().String())
+-			if c.Bool("unixfs-blocks") {
++			if printCids {
+ 				cidL, _ := l.Hash.AsLink()
+ 				fmt.Fprintf(outStream, "%s %s\n", cidL.(cidlink.Link).Cid, name)
+ 			} else {
+@@ -206,7 +220,7 @@ func printUnixFSNode(c *cli.Context, prefix string, node cid.Cid, ls *ipld.LinkS
+ 		i := hn.Iterator()
+ 		for !i.Done() {
+ 			n, l := i.Next()
+-			if c.Bool("unixfs-blocks") {
++			if printCids {
+ 				cl, _ := l.AsLink()
+ 				fmt.Fprintf(outStream, "%s %s\n", cl.(cidlink.Link).Cid, path.Join(prefix, n.String()))
+ 			} else {
+-- 
+2.51.2
+
